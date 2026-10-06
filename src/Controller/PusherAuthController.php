@@ -11,6 +11,7 @@ use Marko\Broadcasting\Exceptions\ChannelAuthorizationException;
 use Marko\Broadcasting\Pusher\Auth\PusherSignature;
 use Marko\Broadcasting\Pusher\Exceptions\PusherException;
 use Marko\Routing\Attributes\Post;
+use Marko\Routing\Exceptions\HttpException;
 use Marko\Routing\Http\Request;
 use Marko\Routing\Http\Response;
 use Psr\Container\ContainerExceptionInterface;
@@ -18,7 +19,7 @@ use Psr\Container\NotFoundExceptionInterface;
 use ReflectionException;
 
 /**
- * Private-channel authorization endpoint used by pusher-js / Laravel Echo.
+ * Private- and presence-channel authorization endpoint used by pusher-js / Laravel Echo.
  *
  * Replace it with #[Preference] on a subclass to change the path or add middleware.
  */
@@ -37,7 +38,7 @@ readonly class PusherAuthController
     ) {}
 
     /**
-     * @throws PusherException|ChannelAuthorizationException|JsonException|ReflectionException|ContainerExceptionInterface|NotFoundExceptionInterface
+     * @throws HttpException|PusherException|ChannelAuthorizationException|JsonException|ReflectionException|ContainerExceptionInterface|NotFoundExceptionInterface
      */
     #[Post('/broadcasting/auth')]
     public function authorize(
@@ -47,27 +48,55 @@ readonly class PusherAuthController
         $channelName = $request->post('channel_name');
 
         if (!is_string($socketId) || preg_match(self::SOCKET_ID_PATTERN, $socketId) !== 1) {
-            return Response::json(['error' => 'A valid socket_id is required.'], 400);
+            throw HttpException::badRequest('A valid socket_id is required.');
         }
 
         if (!is_string($channelName) || $channelName === '') {
-            return Response::json(['error' => 'A channel_name is required.'], 400);
+            throw HttpException::badRequest('A channel_name is required.');
         }
 
         if (str_starts_with($channelName, self::PRESENCE_PREFIX)) {
-            throw PusherException::presenceChannelsNotSupported($channelName);
+            return $this->authorizePresence($socketId, $channelName);
         }
 
         if (!str_starts_with($channelName, self::PRIVATE_PREFIX)) {
-            return Response::json(['error' => 'Only private channels require authorization.'], 400);
+            throw HttpException::badRequest('Only private and presence channels require authorization.');
         }
 
         $name = substr($channelName, strlen(self::PRIVATE_PREFIX));
 
         if (!$this->channelRegistry->authorize($name, $this->guard->user())) {
-            return Response::json(['error' => 'Forbidden.'], 403);
+            throw HttpException::forbidden('Forbidden.');
         }
 
         return Response::json(['auth' => $this->pusherSignature->channelAuth($socketId, $channelName)]);
+    }
+
+    /**
+     * @throws HttpException|PusherException|ChannelAuthorizationException|JsonException|ReflectionException|ContainerExceptionInterface|NotFoundExceptionInterface
+     */
+    private function authorizePresence(
+        string $socketId,
+        string $channelName,
+    ): Response {
+        $name = substr($channelName, strlen(self::PRESENCE_PREFIX));
+        $member = $this->channelRegistry->authorizePresence($name, $this->guard->user());
+
+        if ($member === null) {
+            throw HttpException::forbidden('Forbidden.');
+        }
+
+        $channelData = ['user_id' => (string) $member->id];
+
+        if ($member->info !== []) {
+            $channelData['user_info'] = $member->info;
+        }
+
+        $encoded = json_encode($channelData, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+        return Response::json([
+            'auth' => $this->pusherSignature->presenceChannelAuth($socketId, $channelName, $encoded),
+            'channel_data' => $encoded,
+        ]);
     }
 }

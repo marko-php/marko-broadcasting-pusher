@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use Marko\Broadcasting\Pusher\Auth\PusherSignature;
+use Marko\Broadcasting\Pusher\Exceptions\PusherException;
 use Marko\Broadcasting\Pusher\PusherConfig;
 
 function pusherSpecSignature(): PusherSignature
@@ -47,5 +48,19 @@ describe('PusherSignature', function (): void {
     it('signs the published Pusher channel auth example', function (): void {
         expect(pusherSpecSignature()->channelAuth('1234.1234', 'private-foobar'))
             ->toBe('278d425bdf160c739803:58df8b0c36d6982b82c3ecf6b4662e34fe8c25bba48f5369f135bf843651c3a4');
+    });
+
+    it('signs the published Pusher presence channel auth example', function (): void {
+        $channelData = '{"user_id":10,"user_info":{"name":"Mr. Channels"}}';
+
+        expect(pusherSpecSignature()->presenceChannelAuth('1234.1234', 'presence-foobar', $channelData))
+            ->toBe('278d425bdf160c739803:31935e7d86dba64c2a90aed31fdc61869f9b22ba9d8863bba239c03ca481bc80');
+    });
+
+    it('requires credentials before signing a presence channel', function (): void {
+        $signature = new PusherSignature(new PusherConfig(appId: '3', key: 'k', secret: ''));
+
+        expect(fn () => $signature->presenceChannelAuth('1234.1234', 'presence-foobar', '{"user_id":1}'))
+            ->toThrow(PusherException::class);
     });
 });

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Marko\Broadcasting\BroadcastableInterface;
 use Marko\Broadcasting\Exceptions\BroadcastException;
+use Marko\Broadcasting\PresenceChannel;
 use Marko\Broadcasting\PrivateChannel;
 use Marko\Broadcasting\Pusher\Auth\PusherSignature;
 use Marko\Broadcasting\Pusher\Driver\PusherBroadcaster;
@@ -110,6 +111,24 @@ describe('PusherBroadcaster', function (): void {
         pusherBroadcaster($httpClient)->broadcast(new PrivateChannel('orders.7'), 'order.shipped', []);
 
         expect(pusherRequestBody($httpClient)['channels'])->toBe(['private-orders.7']);
+    });
+
+    it('prefixes presence channels with presence-', function (): void {
+        $httpClient = pusherApi();
+
+        pusherBroadcaster($httpClient)->broadcast(new PresenceChannel('room.7'), 'member.joined', []);
+
+        expect(pusherRequestBody($httpClient)['channels'])->toBe(['presence-room.7']);
+    });
+
+    it('counts the presence- prefix toward the channel name length limit', function (): void {
+        $httpClient = pusherApi();
+
+        pusherBroadcaster($httpClient)->broadcast(new PresenceChannel(str_repeat('a', 155)), 'e', []);
+
+        expect(fn () => pusherBroadcaster($httpClient)->broadcast(new PresenceChannel(str_repeat('a', 156)), 'e', []))
+            ->toThrow(BroadcastException::class, 'is not valid for Pusher')
+            ->and($httpClient->requests)->toHaveCount(1);
     });
 
     it('rejects channel names with characters Pusher does not allow', function (): void {

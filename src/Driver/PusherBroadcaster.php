@@ -109,13 +109,17 @@ readonly class PusherBroadcaster implements BroadcasterInterface
      */
     private function channelName(Channel $channel): string
     {
-        $channelName = $channel->isPrivate() ? 'private-' . $channel->name : $channel->name;
+        $channelName = match (true) {
+            $channel->isPresence() => 'presence-' . $channel->name,
+            $channel->isPrivate() => 'private-' . $channel->name,
+            default => $channel->name,
+        };
 
         if (preg_match(self::CHANNEL_NAME_PATTERN, $channelName) !== 1) {
             throw BroadcastException::invalidChannelName(
                 self::DRIVER,
                 $channel->name,
-                'letters, digits and _ - = @ , . ; (164 characters at most, including the private- prefix)',
+                'letters, digits and _ - = @ , . ; (164 characters at most, including the private- or presence- prefix)',
             );
         }
 

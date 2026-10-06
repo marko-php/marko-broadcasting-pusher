@@ -78,11 +78,33 @@ readonly class PusherSignature
     }
 
     /**
+     * The `auth` value for a presence channel: "key:HMAC(secret, socket_id:channel:channel_data)".
+     * `$channelData` is the already-encoded JSON string the client will receive, signed verbatim.
+     *
+     * @throws PusherException
+     */
+    public function presenceChannelAuth(
+        string $socketId,
+        string $channelName,
+        string $channelData,
+    ): string {
+        return $this->pusherConfig->key . ':' . hash_hmac(
+            'sha256',
+            "$socketId:$channelName:$channelData",
+            $this->secret(),
+        );
+    }
+
+    /**
      * @throws PusherException
      */
     private function secret(): string
     {
-        if ($this->pusherConfig->key === '' || $this->pusherConfig->secret === '' || $this->pusherConfig->appId === '') {
+        if (
+            $this->pusherConfig->key === ''
+            || $this->pusherConfig->secret === ''
+            || $this->pusherConfig->appId === ''
+        ) {
             throw PusherException::missingCredentials();
         }
 

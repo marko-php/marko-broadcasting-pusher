@@ -8,15 +8,6 @@ use Marko\Broadcasting\Exceptions\BroadcastException;
 
 class PusherException extends BroadcastException
 {
-    public static function presenceChannelsNotSupported(string $channelName): self
-    {
-        return new self(
-            message: "Presence channels are not supported yet (requested '$channelName').",
-            context: 'While authorizing a Pusher channel subscription at /broadcasting/auth',
-            suggestion: "Use a private channel ('private-' prefix, PrivateChannel in PHP) instead. Presence channel support (channel_data) is a planned follow-up.",
-        );
-    }
-
     public static function missingCredentials(): self
     {
         return new self(
