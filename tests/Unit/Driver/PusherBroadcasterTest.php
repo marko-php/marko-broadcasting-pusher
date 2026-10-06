@@ -12,6 +12,7 @@ use Marko\Broadcasting\Pusher\PusherConfig;
 use Marko\Http\Exceptions\ConnectionException;
 use Marko\Http\Exceptions\HttpException;
 use Marko\Http\HttpResponse;
+use Marko\Http\RequestOptions;
 use Marko\Testing\Fake\FakeClock;
 use Marko\Testing\Fake\FakeHttpClient;
 use Marko\Testing\Fake\Http\RecordedRequest;
@@ -65,6 +66,30 @@ function pusherRequestQuery(FakeHttpClient $httpClient): array
     parse_str((string) parse_url($httpClient->requests[0]->url, PHP_URL_QUERY), $query);
 
     return $query;
+}
+
+/**
+ * A FakeHttpClient that fails like Guzzle does when the server is down: the
+ * ConnectionException message ends with the full request URL, signed query included.
+ */
+function pusherUnreachableApi(): FakeHttpClient
+{
+    return new class () extends FakeHttpClient
+    {
+        public function request(
+            string $method,
+            string $url,
+            array $options = [],
+        ): HttpResponse {
+            $this->preventStrayRequests(false);
+            parent::request($method, $url, $options);
+
+            throw new ConnectionException(
+                "cURL error 7: Failed to connect to soketi.test port 6001 after 0 ms: Couldn't connect to server "
+                . "(see https://curl.haxx.se/libcurl/c/libcurl-errors.html) for $url",
+            );
+        }
+    };
 }
 
 describe('PusherBroadcaster', function (): void {
@@ -154,27 +179,93 @@ describe('PusherBroadcaster', function (): void {
             ->toThrow(BroadcastException::class, "Failed to broadcast to channel 'shows.42' via Pusher");
     });
 
-    it('throws BroadcastException when the api answers with an error status', function (): void {
+    it('redacts the signed query string from transport failure messages', function (): void {
+        $httpClient = pusherUnreachableApi();
+
+        try {
+            pusherBroadcaster($httpClient)->broadcast('shows.42', 'seat.sold', []);
+            $this->fail('Expected BroadcastException');
+        } catch (BroadcastException $exception) {
+            $signature = pusherRequestQuery($httpClient)['auth_signature'];
+            $text = $exception->getMessage() . $exception->getContext() . $exception->getSuggestion();
+
+            expect($text)->toContain('Failed to connect to soketi.test port 6001')
+                ->and($text)->toContain(PUSHER_TEST_EVENTS_URL)
+                ->and($text)->not->toContain('auth_signature')
+                ->and($text)->not->toContain('auth_key')
+                ->and($text)->not->toContain($signature);
+        }
+    });
+
+    it('does not chain the transport exception that carries the signed url', function (): void {
+        $httpClient = pusherUnreachableApi();
+
+        try {
+            pusherBroadcaster($httpClient)->broadcast('shows.42', 'seat.sold', []);
+            $this->fail('Expected BroadcastException');
+        } catch (BroadcastException $exception) {
+            expect($exception->getPrevious())->toBeNull();
+        }
+    });
+
+    it('sends the trigger request with http_errors disabled', function (): void {
+        $httpClient = pusherApi();
+
+        pusherBroadcaster($httpClient)->broadcast('shows.42', 'seat.sold', []);
+
+        expect($httpClient->requests[0]->options[RequestOptions::HTTP_ERRORS])->toBeFalse();
+    });
+
+    it('puts the api status and response body in the exception when the api rejects the event', function (): void {
         $httpClient = pusherApi(new HttpResponse(413, 'Payload too large'));
 
         try {
             pusherBroadcaster($httpClient)->broadcast('shows.42', 'seat.sold', []);
             $this->fail('Expected BroadcastException');
         } catch (BroadcastException $exception) {
-            expect($exception->getMessage())->toContain('via Pusher')
-                ->and($exception->getContext())->toContain('status code 413')
-                ->and($exception->getPrevious())->toBeInstanceOf(HttpException::class);
+            expect($exception->getMessage())->toBe("Failed to broadcast to channel 'shows.42' via Pusher.")
+                ->and($exception->getContext())->toContain('HTTP 413: Payload too large')
+                ->and($exception->getSuggestion())->toContain('10 KB');
         }
     });
 
-    it('throws BroadcastException when the api answers with a non-success status', function (): void {
+    it('suggests checking credentials when the api rejects the signature', function (): void {
+        $httpClient = pusherApi(new HttpResponse(401, 'Invalid signature: you should have sent HmacSHA256Hex(...)'));
+
+        try {
+            pusherBroadcaster($httpClient)->broadcast('shows.42', 'seat.sold', []);
+            $this->fail('Expected BroadcastException');
+        } catch (BroadcastException $exception) {
+            expect($exception->getContext())->toContain('HTTP 401: Invalid signature')
+                ->and($exception->getSuggestion())->toContain('config/broadcasting-pusher.php');
+        }
+    });
+
+    it('does not put the signed query string in the exception when the api rejects the event', function (): void {
+        $httpClient = pusherApi(new HttpResponse(400, 'Unknown app'));
+
+        try {
+            pusherBroadcaster($httpClient)->broadcast('shows.42', 'seat.sold', []);
+            $this->fail('Expected BroadcastException');
+        } catch (BroadcastException $exception) {
+            $signature = pusherRequestQuery($httpClient)['auth_signature'];
+            $text = $exception->getMessage() . $exception->getContext() . $exception->getSuggestion();
+
+            expect($text)->not->toContain('auth_signature')
+                ->and($text)->not->toContain($signature)
+                ->and($text)->not->toContain('7ad3773142a6692b25b8')
+                ->and($exception->getPrevious())->toBeNull();
+        }
+    });
+
+    it('throws BroadcastException when the api answers with a redirect', function (): void {
         $httpClient = pusherApi(new HttpResponse(304, ''));
 
         try {
             pusherBroadcaster($httpClient)->broadcast('shows.42', 'seat.sold', []);
             $this->fail('Expected BroadcastException');
         } catch (BroadcastException $exception) {
-            expect($exception->getContext())->toContain('server responded with HTTP 304');
+            expect($exception->getContext())->toContain('HTTP 304: (empty body)');
         }
     });
 

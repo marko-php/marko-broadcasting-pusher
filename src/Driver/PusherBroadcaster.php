@@ -14,6 +14,7 @@ use Marko\Broadcasting\Pusher\Exceptions\PusherException;
 use Marko\Broadcasting\Pusher\PusherConfig;
 use Marko\Http\Contracts\HttpClientInterface;
 use Marko\Http\Exceptions\HttpException;
+use Marko\Http\RequestOptions;
 use Psr\Clock\ClockInterface;
 
 /**
@@ -82,26 +83,52 @@ readonly class PusherBroadcaster implements BroadcasterInterface
         $path = "/apps/{$this->pusherConfig->appId}/events";
         $query = $this->pusherSignature->signedQuery('POST', $path, $body, $this->clock->now()->getTimestamp());
 
+        $signedQuery = http_build_query($query);
+
         try {
+            // http_errors off: a 4xx/5xx comes back as a response so Pusher's own reason is reported below.
             $response = $this->httpClient->post(
-                $this->pusherConfig->baseUrl() . $path . '?' . http_build_query($query),
+                $this->pusherConfig->baseUrl() . $path . '?' . $signedQuery,
                 [
-                    'headers' => ['Content-Type' => 'application/json'],
-                    'body' => $body,
-                    'timeout' => $this->pusherConfig->timeout,
+                    RequestOptions::HEADERS => ['Content-Type' => 'application/json'],
+                    RequestOptions::BODY => $body,
+                    RequestOptions::TIMEOUT => $this->pusherConfig->timeout,
+                    RequestOptions::HTTP_ERRORS => false,
                 ],
             );
         } catch (HttpException $e) {
-            throw BroadcastException::publishFailed(self::DRIVER, $channel->name, $e->getMessage(), $e);
-        }
-
-        if (!$response->isSuccessful()) {
+            // Transport failure (ConnectionException extends HttpException). HTTP clients such as Guzzle put
+            // the full request URL, signed query included, in the message, so the message is redacted and the
+            // original exception is deliberately not chained.
             throw BroadcastException::publishFailed(
                 self::DRIVER,
                 $channel->name,
-                "server responded with HTTP {$response->statusCode()}: {$response->body()}",
+                $this->redactSignedQuery($e->getMessage(), $signedQuery, $query['auth_signature']),
             );
         }
+
+        if (!$response->isSuccessful()) {
+            throw BroadcastException::rejected(
+                self::DRIVER,
+                $channel->name,
+                $response->statusCode(),
+                $response->bodyExcerpt(),
+            );
+        }
+    }
+
+    /**
+     * Strip the signed query string (auth_key, auth_timestamp, body_md5, auth_signature) from an error message.
+     */
+    private function redactSignedQuery(
+        string $message,
+        string $signedQuery,
+        string $signature,
+    ): string {
+        $message = str_replace('?' . $signedQuery, '', $message);
+        $message = (string) preg_replace('/\?[^\s]*auth_signature=[^\s]*/', '', $message);
+
+        return str_replace($signature, '[redacted]', $message);
     }
 
     /**
