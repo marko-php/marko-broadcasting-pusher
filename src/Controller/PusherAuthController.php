@@ -7,7 +7,7 @@ namespace Marko\Broadcasting\Pusher\Controller;
 use JsonException;
 use Marko\Authentication\Contracts\GuardInterface;
 use Marko\Broadcasting\ChannelRegistry;
-use Marko\Broadcasting\Exceptions\ChannelAuthorizationException;
+use Marko\Broadcasting\Exceptions\BroadcastException;
 use Marko\Broadcasting\Pusher\Auth\PusherSignature;
 use Marko\Broadcasting\Pusher\Exceptions\PusherException;
 use Marko\Routing\Attributes\Post;
@@ -38,7 +38,7 @@ readonly class PusherAuthController
     ) {}
 
     /**
-     * @throws HttpException|PusherException|ChannelAuthorizationException|JsonException|ReflectionException|ContainerExceptionInterface|NotFoundExceptionInterface
+     * @throws HttpException|PusherException|JsonException|ReflectionException|ContainerExceptionInterface|NotFoundExceptionInterface
      */
     #[Post('/broadcasting/auth')]
     public function authorize(
@@ -65,7 +65,13 @@ readonly class PusherAuthController
 
         $name = substr($channelName, strlen(self::PRIVATE_PREFIX));
 
-        if (!$this->channelRegistry->authorize($name, $this->guard->user())) {
+        try {
+            $authorized = $this->channelRegistry->authorize($name, $this->guard->user());
+        } catch (BroadcastException $e) {
+            throw $this->forbidden($e);
+        }
+
+        if (!$authorized) {
             throw HttpException::forbidden('Forbidden.');
         }
 
@@ -73,14 +79,19 @@ readonly class PusherAuthController
     }
 
     /**
-     * @throws HttpException|PusherException|ChannelAuthorizationException|JsonException|ReflectionException|ContainerExceptionInterface|NotFoundExceptionInterface
+     * @throws HttpException|PusherException|JsonException|ReflectionException|ContainerExceptionInterface|NotFoundExceptionInterface
      */
     private function authorizePresence(
         string $socketId,
         string $channelName,
     ): Response {
         $name = substr($channelName, strlen(self::PRESENCE_PREFIX));
-        $member = $this->channelRegistry->authorizePresence($name, $this->guard->user());
+
+        try {
+            $member = $this->channelRegistry->authorizePresence($name, $this->guard->user());
+        } catch (BroadcastException $e) {
+            throw $this->forbidden($e);
+        }
 
         if ($member === null) {
             throw HttpException::forbidden('Forbidden.');
@@ -98,5 +109,17 @@ readonly class PusherAuthController
             'auth' => $this->pusherSignature->presenceChannelAuth($socketId, $channelName, $encoded),
             'channel_data' => $encoded,
         ]);
+    }
+
+    /**
+     * A channel the registry cannot authorize — no matching authorizer, or a name no pattern
+     * accepts — is denied exactly like a refused subscription. The client only ever sees the
+     * generic message; the ChannelAuthorizationException with its setup hint stays on the
+     * exception chain for server-side reporting.
+     */
+    private function forbidden(
+        BroadcastException $previous,
+    ): HttpException {
+        return new HttpException(statusCode: 403, message: 'Forbidden.', previous: $previous);
     }
 }

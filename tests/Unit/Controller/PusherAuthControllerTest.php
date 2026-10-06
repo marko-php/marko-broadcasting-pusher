@@ -3,11 +3,14 @@
 declare(strict_types=1);
 
 use Marko\Authentication\AuthenticatableInterface;
+use Marko\Broadcasting\Channel;
 use Marko\Broadcasting\ChannelRegistry;
+use Marko\Broadcasting\Exceptions\BroadcastException;
 use Marko\Broadcasting\Exceptions\ChannelAuthorizationException;
 use Marko\Broadcasting\PresenceMember;
 use Marko\Broadcasting\Pusher\Auth\PusherSignature;
 use Marko\Broadcasting\Pusher\Controller\PusherAuthController;
+use Marko\Broadcasting\Pusher\Exceptions\PusherException;
 use Marko\Broadcasting\Pusher\PusherConfig;
 use Marko\Routing\Attributes\Post;
 use Marko\Routing\Exceptions\HttpException;
@@ -15,8 +18,10 @@ use Marko\Routing\Http\Request;
 use Marko\Testing\Fake\FakeAuthenticatable;
 use Marko\Testing\Fake\FakeGuard;
 
-function pusherAuthController(?AuthenticatableInterface $user = null): PusherAuthController
-{
+function pusherAuthController(
+    ?AuthenticatableInterface $user = null,
+    string $secret = '7ad3773142a6692b25b8',
+): PusherAuthController {
     /** @noinspection PhpMissingParentConstructorInspection - Test stub replaces discovery-backed authorization */
     $channelRegistry = new class () extends ChannelRegistry
     {
@@ -27,6 +32,14 @@ function pusherAuthController(?AuthenticatableInterface $user = null): PusherAut
             string $channelName,
             ?AuthenticatableInterface $user,
         ): bool {
+            if (preg_match(Channel::FORBIDDEN_CHARACTERS_PATTERN, $channelName) === 1) {
+                throw BroadcastException::unsafeChannelName($channelName);
+            }
+
+            if ($channelName === 'unknown') {
+                throw ChannelAuthorizationException::unknownChannel($channelName);
+            }
+
             return $channelName === 'foobar' && $user !== null;
         }
 
@@ -53,7 +66,7 @@ function pusherAuthController(?AuthenticatableInterface $user = null): PusherAut
         pusherSignature: new PusherSignature(new PusherConfig(
             appId: '3',
             key: '278d425bdf160c739803',
-            secret: '7ad3773142a6692b25b8',
+            secret: $secret,
         )),
         channelRegistry: $channelRegistry,
         guard: $guard,
@@ -115,10 +128,34 @@ describe('PusherAuthController', function (): void {
         ))->toThrow(fn (HttpException $e) => expect($e->getStatusCode())->toBe(403));
     });
 
-    it('propagates ChannelAuthorizationException for an unknown presence channel', function (): void {
+    it('throws a generic 403 HttpException for a presence channel with no registered authorizer', function (): void {
         expect(fn () => pusherAuthController(new FakeAuthenticatable())->authorize(
             pusherAuthRequest(['socket_id' => '1234.1234', 'channel_name' => 'presence-unknown']),
-        ))->toThrow(ChannelAuthorizationException::class);
+        ))->toThrow(fn (HttpException $e) => expect($e->getStatusCode())->toBe(403)
+            ->and($e->getResponseData())->toBe(['message' => 'Forbidden.'])
+            ->and($e->getPrevious())->toBeInstanceOf(ChannelAuthorizationException::class));
+    });
+
+    it('throws a generic 403 HttpException for a private channel with no registered authorizer', function (): void {
+        expect(fn () => pusherAuthController(new FakeAuthenticatable())->authorize(
+            pusherAuthRequest(['socket_id' => '1234.1234', 'channel_name' => 'private-unknown']),
+        ))->toThrow(fn (HttpException $e) => expect($e->getStatusCode())->toBe(403)
+            ->and($e->getResponseData())->toBe(['message' => 'Forbidden.'])
+            ->and($e->getPrevious())->toBeInstanceOf(ChannelAuthorizationException::class));
+    });
+
+    it('throws a generic 403 HttpException for an unsafe channel name', function (): void {
+        expect(fn () => pusherAuthController(new FakeAuthenticatable())->authorize(
+            pusherAuthRequest(['socket_id' => '1234.1234', 'channel_name' => 'private-orders.{id},*']),
+        ))->toThrow(fn (HttpException $e) => expect($e->getStatusCode())->toBe(403)
+            ->and($e->getResponseData())->toBe(['message' => 'Forbidden.'])
+            ->and($e->getPrevious())->toBeInstanceOf(BroadcastException::class));
+    });
+
+    it('lets a PusherException from missing credentials propagate instead of answering 403', function (): void {
+        expect(fn () => pusherAuthController(new FakeAuthenticatable(), secret: '')->authorize(
+            pusherAuthRequest(['socket_id' => '1234.1234', 'channel_name' => 'private-foobar']),
+        ))->toThrow(PusherException::class);
     });
 
     it('throws a 403 HttpException when the registry denies a private channel', function (): void {
