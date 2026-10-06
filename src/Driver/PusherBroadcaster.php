@@ -14,6 +14,7 @@ use Marko\Broadcasting\Pusher\Exceptions\PusherException;
 use Marko\Broadcasting\Pusher\PusherConfig;
 use Marko\Http\Contracts\HttpClientInterface;
 use Marko\Http\Exceptions\HttpException;
+use Psr\Clock\ClockInterface;
 
 /**
  * Triggers events through the Pusher HTTP API. Works with hosted Pusher and with any server that
@@ -31,6 +32,7 @@ readonly class PusherBroadcaster implements BroadcasterInterface
         private HttpClientInterface $httpClient,
         private PusherSignature $pusherSignature,
         private PusherConfig $pusherConfig,
+        private ClockInterface $clock,
     ) {}
 
     /**
@@ -78,7 +80,7 @@ readonly class PusherBroadcaster implements BroadcasterInterface
         string $body,
     ): void {
         $path = "/apps/{$this->pusherConfig->appId}/events";
-        $query = $this->pusherSignature->signedQuery('POST', $path, $body, time());
+        $query = $this->pusherSignature->signedQuery('POST', $path, $body, $this->clock->now()->getTimestamp());
 
         try {
             $response = $this->httpClient->post(

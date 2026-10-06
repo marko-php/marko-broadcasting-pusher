@@ -11,13 +11,16 @@ use Marko\Broadcasting\Pusher\PusherConfig;
 use Marko\Http\Exceptions\ConnectionException;
 use Marko\Http\Exceptions\HttpException;
 use Marko\Http\HttpResponse;
+use Marko\Testing\Fake\FakeClock;
 use Marko\Testing\Fake\FakeHttpClient;
 use Marko\Testing\Fake\Http\RecordedRequest;
 
 const PUSHER_TEST_EVENTS_URL = 'http://soketi.test:6001/apps/3/events';
 
-function pusherBroadcaster(FakeHttpClient $httpClient): PusherBroadcaster
-{
+function pusherBroadcaster(
+    FakeHttpClient $httpClient,
+    ?FakeClock $clock = null,
+): PusherBroadcaster {
     $pusherConfig = new PusherConfig(
         appId: '3',
         key: '278d425bdf160c739803',
@@ -31,6 +34,7 @@ function pusherBroadcaster(FakeHttpClient $httpClient): PusherBroadcaster
         httpClient: $httpClient,
         pusherSignature: new PusherSignature($pusherConfig),
         pusherConfig: $pusherConfig,
+        clock: $clock ?? new FakeClock(),
     );
 }
 
@@ -83,7 +87,7 @@ describe('PusherBroadcaster', function (): void {
     it('signs the request with auth query parameters', function (): void {
         $httpClient = pusherApi();
 
-        pusherBroadcaster($httpClient)->broadcast('shows.42', 'seat.sold', []);
+        pusherBroadcaster($httpClient, new FakeClock('@1767268800'))->broadcast('shows.42', 'seat.sold', []);
 
         $query = pusherRequestQuery($httpClient);
         $body = $httpClient->requests[0]->body();
@@ -92,7 +96,7 @@ describe('PusherBroadcaster', function (): void {
         expect($query['auth_key'])->toBe('278d425bdf160c739803')
             ->and($query['auth_version'])->toBe('1.0')
             ->and($query['body_md5'])->toBe(md5($body))
-            ->and((int) $query['auth_timestamp'])->toBeGreaterThan(time() - 5)
+            ->and($query['auth_timestamp'])->toBe('1767268800')
             ->and($query['auth_signature'])->toBe(hash_hmac(
                 'sha256',
                 "POST\n/apps/3/events\n" . urldecode(http_build_query($unsigned)),
